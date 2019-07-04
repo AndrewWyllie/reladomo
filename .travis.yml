@@ -10,7 +10,7 @@ script:
   - jdk_switcher use openjdk6
   - export RELADOMO_JDK_HOME="$JAVA_HOME"
   - export RELADOMO_TEST_THREADS=1
-  - build/build.sh reladomo-test-suite l
+  - build/build.sh reladomo-test-suite
 
 branches:
   only:
