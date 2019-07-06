@@ -155,12 +155,9 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
     {
         LocalInMemoryResult localResult = (LocalInMemoryResult) resultSoFar.getLocalResult();
         FastList parentList = localResult.notFound;
-        Operation simplifiedJoinOp = node.getSimplifiedJoinOp(this.mapper, parentList);
-        if (simplifiedJoinOp != null)
+        MithraList simplifiedList = fetchSimplifiedJoinList(node, parentList, true);
+        if (simplifiedList != null)
         {
-            MithraList simplifiedList = findMany(simplifiedJoinOp);
-            simplifiedList.setBypassCache(true);
-            simplifiedList.forceResolve();
             node.setResolvedList(localResult.fullResult.getAll(), chainPosition);
             node.addToResolvedList(simplifiedList, chainPosition);
             return populateQueryCache(parentList, simplifiedList);
@@ -175,6 +172,19 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
                 parentList);
         node.addToResolvedList(localResult.fullResult.getAll(), chainPosition);
         return node.getCachedQueryList();
+    }
+
+    protected MithraList fetchSimplifiedJoinList(DeepFetchNode node, List parentList, boolean bypassCache)
+    {
+        Operation simplifiedJoinOp = node.getSimplifiedJoinOp(this.mapper, parentList);
+        if (simplifiedJoinOp == null)
+        {
+            return null;
+        }
+        MithraList simplifiedList = findMany(simplifiedJoinOp);
+        simplifiedList.setBypassCache(bypassCache);
+        simplifiedList.forceResolve();
+        return simplifiedList;
     }
 
     @Override
@@ -192,9 +202,8 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
     @Override
     public List deepFetchAdhocUsingInClause(DeepFetchNode node, Attribute singleAttribute, List parentList)
     {
-        Operation op = node.getSimplifiedJoinOp(this.getMapper(), parentList);
-        if (op == null) return null;
-        MithraList complexList = op.getResultObjectPortal().getFinder().findMany(op);
+        MithraList complexList = fetchSimplifiedJoinList(node, parentList, false);
+        if (complexList == null) return null;
         return deepFetchUsingComplexList(getImmediateParentList(node, parentList), complexList, node);
     }
 
@@ -250,12 +259,9 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
     {
         if (bypassCache || complexList.getOperation().getResultObjectPortal().isCacheDisabled())
         {
-            Operation simplifiedJoinOp = node.getSimplifiedJoinOp(this.mapper, immediateParentList);
-            if (simplifiedJoinOp != null)
+            MithraList simplifiedList = fetchSimplifiedJoinList(node, immediateParentList, true);
+            if (simplifiedList != null)
             {
-                MithraList simplifiedList = findMany(simplifiedJoinOp);
-                simplifiedList.setBypassCache(true);
-                simplifiedList.forceResolve();
                 node.setResolvedList(simplifiedList, chainPosition);
                 associateSimplifiedResult(complexList.getOperation(), simplifiedList);
                 associateResultsWithAlternateMapper(complexList.getOperation(), simplifiedList);
@@ -271,6 +277,9 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
     private List deepFetchUsingComplexList(List immediateParentList, MithraList complexList, DeepFetchNode node)
     {
         complexList.forceResolve();
+
+        injectWaitAfterComplexList();
+
         CachedQuery cachedQuery = new CachedQuery(complexList.getOperation(), this.orderBy);
         List result = Arrays.asList(complexList.toArray());
         cachedQuery.setResult(result);
@@ -283,6 +292,11 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
         List cachedQueryList = this.populateQueryCache(getImmediateParentList(node, immediateParentList), complexList);
         cachedQueryList.add(cachedQuery);
         return cachedQueryList;
+    }
+
+    protected void injectWaitAfterComplexList()
+    {
+        // for subclass
     }
 
     protected List deepFetchToOneMostlyInMemory(List immediateParentList, Operation complexOperation, DeepFetchNode node)

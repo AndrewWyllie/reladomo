@@ -194,6 +194,18 @@ public class SimpleToManyDeepFetchStrategy extends SingleLinkDeepFetchStrategy
     protected List deepFetchToManyFromServer(HashMap<Operation, List> opToListMap, boolean bypassCache,
             List immediateParentList, MithraList complexList, DeepFetchNode node)
     {
+        MithraList list = getResolvedListFromServer(bypassCache, immediateParentList, complexList, node);
+
+        if (list != complexList)
+        {
+            associateSimplifiedResult(complexList.getOperation(), list);
+        }
+        associateResultsWithAlternateMapper(complexList.getOperation(), list);
+        return cacheResultsForToMany(opToListMap, immediateParentList, list, node);
+    }
+
+    protected MithraList getResolvedListFromServer(boolean bypassCache, List immediateParentList, MithraList complexList, DeepFetchNode node)
+    {
         MithraList list = complexList;
         Operation simplifiedJoinOp = node.getSimplifiedJoinOp(this.mapper, immediateParentList);
         if (simplifiedJoinOp != null)
@@ -202,13 +214,7 @@ public class SimpleToManyDeepFetchStrategy extends SingleLinkDeepFetchStrategy
         }
         list.setBypassCache(bypassCache);
         list.forceResolve();
-
-        if (list != complexList)
-        {
-            associateSimplifiedResult(complexList.getOperation(), list);
-        }
-        associateResultsWithAlternateMapper(complexList.getOperation(), list);
-        return cacheResultsForToMany(opToListMap, immediateParentList, list, node);
+        return list;
     }
 
     @Override
