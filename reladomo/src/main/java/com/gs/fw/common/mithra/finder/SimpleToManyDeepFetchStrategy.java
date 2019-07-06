@@ -58,38 +58,42 @@ public class SimpleToManyDeepFetchStrategy extends SingleLinkDeepFetchStrategy
         {
             return cacheEmptyResult(node);
         }
+        CachedQuery parentQuery = node.getImmediateParentCachedQuery(this.chainPosition);
         HashMap<Operation, List> opToListMap = populateOpToListMapWithEmptyList(immediateParentList);
         MithraList complexList = (MithraList) this.mapOpToList(node);
         complexList.setForceImplicitJoin(forceImplicitJoin);
         if (!bypassCache)
         {
-            List result = deepFetchToManyInMemory(opToListMap, immediateParentList, complexList.getOperation(), node);
+            List result = deepFetchToManyInMemory(opToListMap, immediateParentList, complexList.getOperation(), node, parentQuery);
             if (result != null)
             {
                 return result;
             }
         }
-        return deepFetchToManyFromServer(opToListMap, bypassCache, immediateParentList, complexList, node);
+        return deepFetchToManyFromServer(opToListMap, bypassCache, immediateParentList, complexList, node, parentQuery);
     }
 
-    private List cacheResultsForToMany(HashMap<Operation, List> opToListMap, List immediateParentList, List list, DeepFetchNode node)
+    private List cacheResultsForToMany(HashMap<Operation, List> opToListMap, List immediateParentList,
+            List list, DeepFetchNode node, CachedQuery baseQuery)
     {
         int roughSize = (list.size() / immediateParentList.size()) + 1;
         int doNotCacheCount = associateResultsWithOps(list, opToListMap, roughSize, null);
-        node.setResolvedList(list, chainPosition);
-        return cacheResults(opToListMap, doNotCacheCount);
+        node.setResolvedList(list, chainPosition, baseQuery);
+        return cacheResults(opToListMap, doNotCacheCount, baseQuery);
     }
 
-    protected List deepFetchToManyInMemory(HashMap<Operation, List> opToListMap, List immediateParentList, Operation op, DeepFetchNode node)
+    protected List deepFetchToManyInMemory(HashMap<Operation, List> opToListMap, List immediateParentList, Operation op,
+            DeepFetchNode node, CachedQuery parentQuery)
     {
         MithraObjectPortal portal = op.getResultObjectPortal();
         if (portal.isCacheDisabled()) return null;
 
+        CachedQuery complexCachedQuery = new CachedQuery(op, this.orderBy);
         QueryCache queryCache = portal.getQueryCache();
         CachedQuery cachedResult = queryCache.findByEquality(op);
         if (cachedResult != null)
         {
-            return cacheResultsForToMany(opToListMap, immediateParentList, cachedResult.getResult(), node);
+            return cacheResultsForToMany(opToListMap, immediateParentList, cachedResult.getResult(), node, cachedResult);
         }
         Iterator<Operation> it = opToListMap.keySet().iterator();
         FastList queries = null;
@@ -108,10 +112,12 @@ public class SimpleToManyDeepFetchStrategy extends SingleLinkDeepFetchStrategy
         {
             resolvedList.sortThis(this.orderBy);
         }
-        node.setResolvedList(resolvedList, this.chainPosition);
-        CachedQuery complexCachedQuery = new CachedQuery(op, this.orderBy);
+        node.setResolvedList(resolvedList, this.chainPosition, complexCachedQuery);
         complexCachedQuery.setResult(resolvedList);
-        cacheComplexQuery(complexCachedQuery, true);
+        if (parentQuery != null && !parentQuery.isExpired())
+        {
+            cacheComplexQuery(complexCachedQuery, true);
+        }
         queries.add(complexCachedQuery);
         return queries;
     }
@@ -182,26 +188,31 @@ public class SimpleToManyDeepFetchStrategy extends SingleLinkDeepFetchStrategy
     private List deepFetchWithComplexList(DeepFetchNode node, List immediateParentList, MithraList complexList)
     {
         complexList.forceResolve();
-        associateResultsWithAlternateMapper(complexList.getOperation(), complexList);
+        associateResultsWithAlternateMapper(complexList.getOperation(), complexList, getCachedQueryFromList(complexList));
         if (immediateParentList == null)
         {
             immediateParentList = this.getImmediateParentList(node);
         }
         HashMap<Operation, List> opToListMap = populateOpToListMapWithEmptyList(immediateParentList);
-        return cacheResultsForToMany(opToListMap, immediateParentList, complexList, node);
+        return cacheResultsForToMany(opToListMap, immediateParentList, complexList, node, getCachedQueryFromList(complexList));
     }
 
     protected List deepFetchToManyFromServer(HashMap<Operation, List> opToListMap, boolean bypassCache,
-            List immediateParentList, MithraList complexList, DeepFetchNode node)
+            List immediateParentList, MithraList complexList, DeepFetchNode node, CachedQuery parentQuery)
     {
+        CachedQuery baseQuery = new CachedQuery(complexList.getOperation(), this.orderBy);
+        if (parentQuery != null)
+        {
+            baseQuery = parentQuery;
+        }
         MithraList list = getResolvedListFromServer(bypassCache, immediateParentList, complexList, node);
 
         if (list != complexList)
         {
-            associateSimplifiedResult(complexList.getOperation(), list);
+            associateSimplifiedResult(complexList.getOperation(), list, baseQuery);
         }
-        associateResultsWithAlternateMapper(complexList.getOperation(), list);
-        return cacheResultsForToMany(opToListMap, immediateParentList, list, node);
+        associateResultsWithAlternateMapper(complexList.getOperation(), list, baseQuery);
+        return cacheResultsForToMany(opToListMap, immediateParentList, list, node, getCachedQueryFromList(list));
     }
 
     protected MithraList getResolvedListFromServer(boolean bypassCache, List immediateParentList, MithraList complexList, DeepFetchNode node)
