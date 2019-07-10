@@ -139,7 +139,7 @@ public abstract class SingleLinkDeepFetchStrategy extends DeepFetchStrategy
         return op.getResultObjectPortal().getFinder().findMany(op);
     }
 
-    protected List cacheResults(HashMap<Operation, List> opToListMap, int doNotCacheCount, CachedQuery baseQuery)
+    protected List cacheResults(HashMap<Operation, List> opToListMap, int doNotCacheCount, CachedQueryPair baseQuery)
     {
         int initialCapacity = opToListMap.size() - doNotCacheCount;
         if (initialCapacity <= 0 ) initialCapacity = 1;
@@ -232,14 +232,14 @@ public abstract class SingleLinkDeepFetchStrategy extends DeepFetchStrategy
         return filteredParentList;
     }
 
-    protected void associateSimplifiedResult(Operation op, MithraList list, CachedQuery baseQuery)
+    protected void associateSimplifiedResult(Operation op, MithraList list, CachedQueryPair baseQuery)
     {
         List resultList = new FastList(list);
         if (this.orderBy != null && resultList.size() > 1) Collections.sort(resultList, this.orderBy);
         associateSimplifiedResult(op, resultList, baseQuery);
     }
 
-    protected void associateSimplifiedResult(Operation op, List resultList, CachedQuery baseQuery)
+    protected void associateSimplifiedResult(Operation op, List resultList, CachedQueryPair baseQuery)
     {
         CachedQuery cachedQuery = new CachedQuery(op, this.orderBy);
         if (this.orderBy != null && resultList.size() > 1) Collections.sort(resultList, this.orderBy);
@@ -250,7 +250,7 @@ public abstract class SingleLinkDeepFetchStrategy extends DeepFetchStrategy
         }
     }
 
-    protected void associateResultsWithAlternateMapper(Operation originalOp, MithraList list, CachedQuery baseQuery)
+    protected void associateResultsWithAlternateMapper(Operation originalOp, MithraList list, CachedQueryPair baseQuery)
     {
         if (this.alternateMapper != null)
         {
@@ -258,7 +258,7 @@ public abstract class SingleLinkDeepFetchStrategy extends DeepFetchStrategy
         }
     }
 
-    protected void associateResultsWithAlternateMapper(Operation originalOp, List list, CachedQuery baseQuery)
+    protected void associateResultsWithAlternateMapper(Operation originalOp, List list, CachedQueryPair baseQuery)
     {
         if (this.alternateMapper != null)
         {
@@ -310,5 +310,31 @@ public abstract class SingleLinkDeepFetchStrategy extends DeepFetchStrategy
     {
         DelegatingList delegatingList = (DelegatingList) baseList;
         return delegatingList.zGetDelegated().getCachedQuery(delegatingList);
+    }
+
+    protected static class CachedQueryPair
+    {
+        private CachedQuery one;
+        private CachedQuery two;
+
+        public CachedQueryPair(CachedQuery one)
+        {
+            this.one = one;
+        }
+
+        public void add(CachedQuery two)
+        {
+            this.two = two;
+        }
+
+        public boolean isExpired()
+        {
+            return this.one.isExpired() || (this.two != null && this.two.isExpired());
+        }
+
+        public CachedQuery getOne()
+        {
+            return this.one;
+        }
     }
 }
