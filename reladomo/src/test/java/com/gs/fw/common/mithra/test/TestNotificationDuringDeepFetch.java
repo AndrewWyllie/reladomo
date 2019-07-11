@@ -48,7 +48,8 @@ public class TestNotificationDuringDeepFetch extends MithraTestAbstract
         WAIT_BETWEEN_PARENT_FETCH_AND_CHILD_FETCH,
         WAIT_BETWEEN_CHILD_FETCH_AND_CHILD_CACHE,
         WAIT_DURING_CHILD_CACHE_SIMPLIFIED_RESULT,
-        WAIT_DURING_CHILD_CACHE_RESULTS_MAP
+        WAIT_DURING_CHILD_CACHE_RESULTS_MAP,
+        WAIT_BEFORE_CHILD_DEEP_FETCH
     }
 
     private Semaphore signalWaitingForUpdate;
@@ -440,13 +441,14 @@ public class TestNotificationDuringDeepFetch extends MithraTestAbstract
 
         // The next call will resolve the deep fetch using the deep fetch strategy.
         // The harnessed version of the deep fetch strategy coordinates with the update thread,
-        // to ensure the database updates are applied after the parent list is resolved but before the deep fetch was completed.
+        // to ensure the database updates are applied just before the results map is cached.
         Assert.assertEquals(5, orderList2.size());
 
-        // Will hit the database with single-object retrievals as all OrderItems are now invalidated in the cache
+        // Traverse single item relationship lookup which will use a single item operation.
+        // Will hit the database with single-object retrievals as all OrderItems are now invalidated in the cache.
         Assert.assertEquals(6, orderList2.asEcList().flatCollect(getOrderItemsOfOrder).size());
 
-        // Traverse single item relationship lookup which will use a single item operation.
+        // Should reflect the latest updates because the prior statement caused these OrderItem objects to be read from database.
         Assert.assertEquals(6, orderList2.asEcList().flatCollect(getOrderItemsOfOrder).count(orderItemStateEqualsInProgress));
 
         thread.join();
@@ -757,6 +759,255 @@ public class TestNotificationDuringDeepFetch extends MithraTestAbstract
         Assert.assertEquals(includeChildUpdateAfterParentUpdate ? 6 : 5, orderList4.getOrderStatus().asEcList().count(orderStatusEqualsTen));
     }
 
+    public void testDeepFetch_OneToOne_SingleItemRelationshipCaching_NotificationDuringResultsMapCache_PartiallyFromServer() throws SQLException, InterruptedException
+    {
+        runTestDeepFetchOneToOneTest_SingleItemRelationshipCaching(false, false);
+    }
+
+    public void testDeepFetch_OneToOne_SingleItemRelationshipCaching_NotificationDuringResultsMapCache_FullyFromServer() throws SQLException, InterruptedException
+    {
+        runTestDeepFetchOneToOneTest_SingleItemRelationshipCaching(true, false);
+    }
+
+    public void testDeepFetch_OneToOne_SingleItemRelationshipCaching_NotificationDuringResultsMapCache_BypassCache_ComplexOp() throws SQLException, InterruptedException
+    {
+        runTestDeepFetchOneToOneTest_SingleItemRelationshipCaching(true, true);
+    }
+
+    public void testDeepFetch_OneToOne_SingleItemRelationshipCaching_NotificationDuringResultsMapCache_BypassCache_SimplifiedOp() throws SQLException, InterruptedException
+    {
+        runTestDeepFetchOneToOneTest_SingleItemRelationshipCaching(false, true);
+    }
+
+    private void runTestDeepFetchOneToOneTest_SingleItemRelationshipCaching(boolean forceComplexOp, boolean bypassCache) throws SQLException, InterruptedException
+    {
+        if (OrderFinder.isFullCache())
+        {
+            logger.info("Skipping test - deep fetch test cases are only applicable to partial cache runtime configuration");
+            return;
+        }
+
+        forceComplexOp(forceComplexOp);
+
+        TimingTestCase timingTestCase = TimingTestCase.WAIT_DURING_CHILD_CACHE_RESULTS_MAP;
+
+        // Set up additional test data before the first deep fetch
+        executeAndAssertSqlUpdate(1, "update APP.ORDERS set STATE = 'In-Progress' where ORDER_ID = 56");
+        simulateOrderUpdateNotification(56, "state");
+
+        final Operation op = OrderFinder.state().eq("In-Progress");
+        OrderList orderList = OrderFinder.findMany(op);
+        orderList.deepFetch(harnessDeepFetchRelationship(OrderFinder.orderStatus(), timingTestCase));
+
+        final Function<Order, List<OrderStatus>> getOrderStatusOfOrder = new Function<Order, List<OrderStatus>>()
+        {
+            @Override
+            public List<OrderStatus> valueOf(Order order)
+            {
+                final OrderStatus orderStatus = order.getOrderStatus();
+                return orderStatus != null ? Collections.singletonList(orderStatus) : Collections.<OrderStatus>emptyList();
+            }
+        };
+
+        final Predicate<OrderStatus> orderStatusEqualsTen = new Predicate<OrderStatus>()
+        {
+            @Override
+            public boolean accept(OrderStatus each)
+            {
+                return each.getStatus() == 10;
+            }
+        };
+
+        allowAllFetches();
+
+        Assert.assertEquals(5, orderList.size());
+        Assert.assertEquals(5, orderList.asEcList().flatCollect(getOrderStatusOfOrder).size());
+        Assert.assertEquals(4, orderList.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
+        Assert.assertEquals(5, orderList.getOrderStatus().size());
+
+        // This update and notification gives the deep fetch a reason to have to hit the database for the OrderStatus we're going to update in the test.
+        // This update is to a different attribute so it will not change the assertion results.
+        executeAndAssertSqlUpdate(1, "update APP.ORDER_STATUS set LAST_USER = 'Bob' where ORDER_ID = 56");
+        simulateOrderStatusUpdateNotification(56, "lastUser");
+
+        makeFetchesWaitForSignal();
+
+        // Simulate a database update and notification message occurring just prior to the individual related object being cached.
+        // This is to test that we don't cause this update to be 'lost' by caching incorrectly.
+        Thread thread = new Thread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                waitToStartUpdateThread(); // wait until the deep fetch retrieval has reached the right point
+
+                executeAndAssertSqlUpdate(1, "update APP.ORDER_STATUS set STATUS = 10 where ORDER_ID = 56");
+                simulateOrderStatusUpdateNotification(56, "status");
+
+                signalUpdateThreadDone(); // allow the deep fetch to complete
+            }
+        });
+        thread.start();
+
+        OrderList orderList2 = OrderFinder.findMany(op);
+        orderList2.setBypassCache(bypassCache);
+        orderList2.deepFetch(harnessDeepFetchRelationship(OrderFinder.orderStatus(), timingTestCase));
+
+        logger.info("Performing deep fetch retrieval with concurrent database update during cache of results map");
+
+        // The next call will resolve the deep fetch using the deep fetch strategy.
+        // The harnessed version of the deep fetch strategy coordinates with the update thread,
+        // to ensure the database updates are applied just before the results map is cached.
+        Assert.assertEquals(5, orderList2.size());
+
+        // Traverse single item relationship lookup which will use a single item operation.
+        // Will hit the database with single-object retrievals as all OrderStatus objects are now invalidated in the cache.
+        Assert.assertEquals(5, orderList2.asEcList().flatCollect(getOrderStatusOfOrder).size());
+
+        // Should reflect the latest updates because the prior statement caused these OrderStatus objects to be read from database.
+        Assert.assertEquals(5, orderList2.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
+
+        Assert.assertEquals(5, orderList2.getOrderStatus().size());
+        Assert.assertEquals(5, orderList2.getOrderStatus().asEcList().count(orderStatusEqualsTen));
+
+        allowAllFetches();
+
+        // Should now reflect all updates to date as this is a brand new query
+        OrderList orderList3 = OrderFinder.findMany(op);
+        orderList3.deepFetch(harnessDeepFetchRelationship(OrderFinder.orderStatus(), timingTestCase));
+
+        logger.info("Performing final deep fetch retrieval");
+
+        final int retrievalCountBeforeFinalFetch = MithraManagerProvider.getMithraManager().getDatabaseRetrieveCount();
+
+        Assert.assertEquals(5, orderList3.size());
+        Assert.assertEquals(5, orderList3.asEcList().flatCollect(getOrderStatusOfOrder).size());
+        Assert.assertEquals(5, orderList3.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
+        Assert.assertEquals(5, orderList3.getOrderStatus().size());
+        Assert.assertEquals(5, orderList3.getOrderStatus().asEcList().count(orderStatusEqualsTen));
+
+        final int retrievalCountAfterFinalFetch = MithraManagerProvider.getMithraManager().getDatabaseRetrieveCount();
+        final int retrievalCountDuringFinalFetch = retrievalCountAfterFinalFetch - retrievalCountBeforeFinalFetch;
+        Assert.assertTrue("Executed too many database retrievals: " + retrievalCountDuringFinalFetch, retrievalCountDuringFinalFetch <= 2);
+
+    }
+
+    public void testDeepFetch_OneToOne_ParentNotificationBeforeDeepFetch_PartiallyFromServer() throws SQLException, InterruptedException
+    {
+        // No single item ops will get cached for this case as they were all found in memory. This test is just for completeness.
+        runTestDeepFetchOneToOneTest_ParentNotificationBeforeDeepFetch(false, false);
+    }
+
+    public void testDeepFetch_OneToOne_ParentNotificationBeforeDeepFetch_BypassCache_ComplexOp() throws SQLException, InterruptedException
+    {
+        runTestDeepFetchOneToOneTest_ParentNotificationBeforeDeepFetch(true, true);
+    }
+
+    public void testDeepFetch_OneToOne_ParentNotificationBeforeDeepFetch_BypassCache_SimplifiedOp() throws SQLException, InterruptedException
+    {
+        runTestDeepFetchOneToOneTest_ParentNotificationBeforeDeepFetch(false, true);
+    }
+
+    private void runTestDeepFetchOneToOneTest_ParentNotificationBeforeDeepFetch(boolean forceComplexOp, boolean bypassCache) throws SQLException, InterruptedException
+    {
+        if (OrderFinder.isFullCache())
+        {
+            logger.info("Skipping test - deep fetch test cases are only applicable to partial cache runtime configuration");
+            return;
+        }
+
+        forceComplexOp(forceComplexOp);
+
+        TimingTestCase timingTestCase = TimingTestCase.WAIT_BEFORE_CHILD_DEEP_FETCH;
+
+        final Operation op = OrderFinder.state().eq("In-Progress");
+        OrderList orderList = OrderFinder.findMany(op);
+        orderList.deepFetch(harnessDeepFetchRelationship(OrderFinder.orderStatus(), timingTestCase));
+
+        final Function<Order, List<OrderStatus>> getOrderStatusOfOrder = new Function<Order, List<OrderStatus>>()
+        {
+            @Override
+            public List<OrderStatus> valueOf(Order order)
+            {
+                final OrderStatus orderStatus = order.getOrderStatus();
+                return orderStatus != null ? Collections.singletonList(orderStatus) : Collections.<OrderStatus>emptyList();
+            }
+        };
+
+        final Predicate<OrderStatus> orderStatusEqualsTen = new Predicate<OrderStatus>()
+        {
+            @Override
+            public boolean accept(OrderStatus each)
+            {
+                return each.getStatus() == 10;
+            }
+        };
+
+        allowAllFetches();
+
+        Assert.assertEquals(4, orderList.size());
+        Assert.assertEquals(4, orderList.asEcList().flatCollect(getOrderStatusOfOrder).size());
+        Assert.assertEquals(4, orderList.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
+        Assert.assertEquals(4, orderList.getOrderStatus().size());
+
+        makeFetchesWaitForSignal();
+
+        // Simulate a database update and notification message occurring to the parent table just prior to the deep fetch of the child table.
+        // This is to test that we don't cause this update to be 'lost' by caching incorrectly.
+        Thread thread = new Thread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                waitToStartUpdateThread(); // wait until the deep fetch retrieval has reached the right point
+
+                executeAndAssertSqlUpdate(1, "update APP.ORDERS set STATE = 'In-Progress' where ORDER_ID = 55");
+                simulateOrderUpdateNotification(55, "state");
+
+                signalUpdateThreadDone(); // allow the deep fetch to complete
+            }
+        });
+        thread.start();
+
+        OrderList orderList2 = OrderFinder.findMany(op);
+        orderList2.setBypassCache(bypassCache);
+        orderList2.deepFetch(harnessDeepFetchRelationship(OrderFinder.orderStatus(), timingTestCase));
+
+        logger.info("Performing deep fetch retrieval with concurrent database update to parent during deep fetch of child");
+
+        // The next call will resolve the deep fetch using the deep fetch strategy.
+        // The harnessed version of the deep fetch strategy coordinates with the update thread,
+        // to ensure the database updates are applied just before deepFetchToOneMostlyInMemory.
+        Assert.assertEquals(4, orderList2.size());
+        Assert.assertEquals(4, orderList2.asEcList().flatCollect(getOrderStatusOfOrder).size());
+        Assert.assertEquals(4, orderList2.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
+
+        // todo: for non-bypassCache case these relationship retrievals do not reflect the update because the CachedQuery did not invalidate, whereas the equivalent operation on a ToMany does invalidate. Is this correct?
+        Assert.assertEquals(bypassCache ? 5 : 4, orderList2.getOrderStatus().size());
+        Assert.assertEquals(bypassCache ? 5 : 4, orderList2.getOrderStatus().asEcList().count(orderStatusEqualsTen));
+
+        allowAllFetches();
+
+        // Should now reflect all updates to date as this is a brand new query
+        OrderList orderList3 = OrderFinder.findMany(op);
+        orderList3.deepFetch(harnessDeepFetchRelationship(OrderFinder.orderStatus(), timingTestCase));
+
+        logger.info("Performing final deep fetch retrieval");
+
+        final int retrievalCountBeforeFinalFetch = MithraManagerProvider.getMithraManager().getDatabaseRetrieveCount();
+
+        Assert.assertEquals(5, orderList3.size());
+        Assert.assertEquals(5, orderList3.asEcList().flatCollect(getOrderStatusOfOrder).size());
+        Assert.assertEquals(5, orderList3.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
+        Assert.assertEquals(5, orderList3.getOrderStatus().size());
+        Assert.assertEquals(5, orderList3.getOrderStatus().asEcList().count(orderStatusEqualsTen));
+
+        final int retrievalCountAfterFinalFetch = MithraManagerProvider.getMithraManager().getDatabaseRetrieveCount();
+        final int retrievalCountDuringFinalFetch = retrievalCountAfterFinalFetch - retrievalCountBeforeFinalFetch;
+        Assert.assertTrue("Executed too many database retrievals: " + retrievalCountDuringFinalFetch, retrievalCountDuringFinalFetch <= 2);
+
+    }
+
     public void testAdhocDeepFetch_OneToOne() throws SQLException, InterruptedException
     {
         if (OrderFinder.isFullCache())
@@ -1057,6 +1308,24 @@ public class TestNotificationDuringDeepFetch extends MithraTestAbstract
             {
                 signalAndWaitForUpdate("resolveComplexList");
             }
+        }
+
+        @Override
+        protected List cacheResults(HashMap<Operation, List> opToListMap, int doNotCacheCount, CachedQueryPair baseQuery) {
+            if (timingTestCase == TimingTestCase.WAIT_DURING_CHILD_CACHE_RESULTS_MAP)
+            {
+                signalAndWaitForUpdate("cacheResults");
+            }
+            return super.cacheResults(opToListMap, doNotCacheCount, baseQuery);
+        }
+
+        @Override
+        public List deepFetch(DeepFetchNode node, boolean bypassCache, boolean forceImplicitJoin) {
+            if (timingTestCase == TimingTestCase.WAIT_BEFORE_CHILD_DEEP_FETCH)
+            {
+                signalAndWaitForUpdate("deepFetch");
+            }
+            return super.deepFetch(node, bypassCache, forceImplicitJoin);
         }
     }
 }
