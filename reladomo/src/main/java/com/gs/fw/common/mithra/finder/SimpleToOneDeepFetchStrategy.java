@@ -32,12 +32,7 @@ import org.eclipse.collections.impl.list.mutable.FastList;
 import org.eclipse.collections.impl.map.mutable.UnifiedMap;
 import org.eclipse.collections.impl.set.mutable.UnifiedSet;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 
 public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
@@ -315,6 +310,8 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
         if (portal.isCacheDisabled()) return null;
 
         CachedQuery cachedQuery = new CachedQuery(complexOperation, this.orderBy);
+        CachedQueryPair cachedQueryPair = new CachedQueryPair(cachedQuery);
+        cachedQueryPair.add(node.getImmediateParentCachedQuery(this.chainPosition));
 
         FullUniqueIndex fullResult = new FullUniqueIndex("identity", IDENTITY_EXTRACTORS);
         FastList notFound = new FastList();
@@ -358,15 +355,16 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
                 haveToGoToDatabase = false;
             }
         }
-        return finishDeepFetchInMemory(cachedQuery, complexOperation, node, fullResult, relatedList, haveToGoToDatabase, cachedQueryList);
+        return finishDeepFetchInMemory(cachedQueryPair, complexOperation, node, fullResult, relatedList, haveToGoToDatabase, cachedQueryList);
     }
 
-    private List finishDeepFetchInMemory(CachedQuery cachedQuery, Operation complexOperation,
+    private List finishDeepFetchInMemory(CachedQueryPair cachedQueryPair, Operation complexOperation,
             DeepFetchNode node, FullUniqueIndex fullResult,
             List relatedList, boolean haveToGoToDatabase, List cachedQueryList)
     {
         if (!haveToGoToDatabase)
         {
+            CachedQuery cachedQuery = cachedQueryPair.getOne();
             if (relatedList == null) relatedList = copyToList(fullResult);
             node.setResolvedList(relatedList, chainPosition, cachedQuery);
             if (cachedQueryList == null)
@@ -380,9 +378,12 @@ public class SimpleToOneDeepFetchStrategy extends SingleLinkDeepFetchStrategy
             if (this.orderBy != null && relatedList.size() > 1) Collections.sort(relatedList, this.orderBy);
             cachedQuery.setResult(relatedList);
             cachedQuery.setOneQueryForMany(this.isResolvableInCache);
-            cacheComplexQuery(cachedQuery, this.isResolvableInCache);
+            if (!cachedQueryPair.isExpired())
+            {
+                cacheComplexQuery(cachedQuery, this.isResolvableInCache);
+            }
             cachedQueryList.add(cachedQuery);
-            associateResultsWithAlternateMapper(complexOperation, relatedList, new CachedQueryPair(cachedQuery));
+            associateResultsWithAlternateMapper(complexOperation, relatedList, cachedQueryPair);
             return cachedQueryList;
         }
         return null;

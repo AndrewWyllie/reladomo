@@ -982,9 +982,10 @@ public class TestNotificationDuringDeepFetch extends MithraTestAbstract
         Assert.assertEquals(4, orderList2.asEcList().flatCollect(getOrderStatusOfOrder).size());
         Assert.assertEquals(4, orderList2.asEcList().flatCollect(getOrderStatusOfOrder).count(orderStatusEqualsTen));
 
-        // todo: for non-bypassCache case these relationship retrievals do not reflect the update because the CachedQuery did not invalidate, whereas the equivalent operation on a ToMany does invalidate. Is this correct?
-        Assert.assertEquals(bypassCache ? 5 : 4, orderList2.getOrderStatus().size());
-        Assert.assertEquals(bypassCache ? 5 : 4, orderList2.getOrderStatus().asEcList().count(orderStatusEqualsTen));
+        // This includes the OrderStatus for order 55 because OrderList.getOrderStatus() does a new finder query which hits the database due to the stale query cache.
+        // It gives the correct results but there is scope to optimise the performance if we could adopt a more sophisticated strategy.
+        Assert.assertEquals(5, orderList2.getOrderStatus().size());
+        Assert.assertEquals(5, orderList2.getOrderStatus().asEcList().count(orderStatusEqualsTen));
 
         allowAllFetches();
 
